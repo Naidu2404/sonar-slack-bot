@@ -68,7 +68,7 @@ def _issues_by_file_blocks(issues: list[dict], project_key: str) -> list:
 
     for file_path, file_issues in by_file.items():
         lines = []
-        for i in issue_list := file_issues:
+        for i in file_issues:
             icon = SEV_ICON.get(i["severity"], "⚪")
             line_ref = f"L{i['line']}" if i["line"] != "?" else ""
             msg = i["message"][:80] + "…" if len(i["message"]) > 80 else i["message"]
