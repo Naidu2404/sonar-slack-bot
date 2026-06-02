@@ -5,6 +5,7 @@ Fetches issues and per-file coverage, filtered to the configured paths.
 """
 
 import os
+import fnmatch
 import requests
 from dataclasses import dataclass, field
 
@@ -43,12 +44,22 @@ def _get(endpoint: str, params: dict, token: str) -> dict:
 def _matches(component_key: str, file_paths: list[str]) -> bool:
     """
     component_key format from SonarCloud: "project-key:src/path/to/file.vue"
-    Match if any configured path is a substring of the file portion.
+
+    Each entry in file_paths is matched against the file portion using:
+      - glob pattern  if it contains * or ?  (e.g. src/**/contract_staffing/**)
+      - substring     otherwise              (e.g. contract_staffing)
     """
     if not file_paths:
         return True  # no filter = include everything
     file_part = component_key.split(":", 1)[-1] if ":" in component_key else component_key
-    return any(p in file_part for p in file_paths)
+    for p in file_paths:
+        if "*" in p or "?" in p:
+            if fnmatch.fnmatch(file_part, p):
+                return True
+        else:
+            if p in file_part:
+                return True
+    return False
 
 
 def fetch_report(
