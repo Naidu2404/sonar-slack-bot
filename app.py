@@ -253,17 +253,20 @@ def handle_sonar(ack, respond, command, body):
 
     # ── report (interactive picker) ───────────────────────────────────────────
     elif sub == "report":
-        repos = db.list_repos_in_channel(channel_id)
-        if not repos:
-            return respond("No repos tracked in this channel yet. Use `/sonar track <key>` to add one.")
-        if len(repos) == 1:
-            # Only one repo — run directly without picker
-            respond(f"⏳ Fetching report for `{repos[0]['project_key']}`…")
-            result = post_report(repos[0]["project_key"], channel_id)
-            respond(result)
-        else:
-            respond(blocks=report_picker_blocks(channel_id, repos),
-                    text="Select a repo to report on")
+        try:
+            repos = db.list_repos_in_channel(channel_id)
+            if not repos:
+                return respond("No repos tracked in this channel yet. Use `/sonar track <key>` to add one.")
+            if len(repos) == 1:
+                respond(f"⏳ Fetching report for `{repos[0]['project_key']}`…")
+                result = post_report(repos[0]["project_key"], channel_id)
+                respond(result)
+            else:
+                respond(blocks=report_picker_blocks(channel_id, repos),
+                        text="Select a repo to report on")
+        except Exception as e:
+            log.exception("Error in /sonar report")
+            respond(f"❌ Unexpected error: `{e}`")
 
     # ── list ──────────────────────────────────────────────────────────────────
     elif sub == "list":
@@ -302,12 +305,16 @@ def handle_sonar(ack, respond, command, body):
 @app.action("run_sonar_report")
 def handle_report_select(ack, body, respond):
     ack()
-    project_key = body["actions"][0]["selected_option"]["value"]
-    channel_id  = body["channel"]["id"]
-    respond(f"⏳ Fetching report for `{project_key}`…")
-    result = post_report(project_key, channel_id)
-    if not result.startswith("✅"):
-        respond(result)
+    try:
+        project_key = body["actions"][0]["selected_option"]["value"]
+        channel_id  = body["channel"]["id"]
+        respond(f"⏳ Fetching report for `{project_key}`…")
+        result = post_report(project_key, channel_id)
+        if not result.startswith("✅"):
+            respond(result)
+    except Exception as e:
+        log.exception("Error in report action")
+        respond(f"❌ Unexpected error: `{e}`")
 
 
 # ── Startup ────────────────────────────────────────────────────────────────────

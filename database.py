@@ -9,8 +9,11 @@ Schema:
 
 import sqlite3
 import os
+import logging
 from contextlib import contextmanager
 from typing import Optional
+
+log = logging.getLogger(__name__)
 
 DB_PATH = os.environ.get("DB_PATH", "sonar_bot.db")
 
@@ -33,6 +36,31 @@ def get_conn():
 
 def init_db():
     with get_conn() as conn:
+        # ── migrations for existing databases ─────────────────────────────────
+        # Add report_time if upgrading from older schema
+        try:
+            conn.execute("ALTER TABLE channel_configs ADD COLUMN report_time TEXT NOT NULL DEFAULT '09:00'")
+            log.info("Migration: added report_time column to channel_configs")
+        except Exception:
+            pass  # column already exists
+
+        # Migrate old schema: if repos had channel_id/schedule, move them to channel_configs
+        try:
+            cols = [r[1] for r in conn.execute("PRAGMA table_info(repos)").fetchall()]
+            if "channel_id" in cols:
+                rows = conn.execute(
+                    "SELECT project_key, channel_id, schedule FROM repos WHERE channel_id IS NOT NULL"
+                ).fetchall()
+                for r in rows:
+                    conn.execute(
+                        "INSERT OR IGNORE INTO channel_configs (project_key, channel_id, schedule) VALUES (?,?,?)",
+                        (r[0], r[1], r[2] or "weekly"),
+                    )
+                if rows:
+                    log.info(f"Migration: moved {len(rows)} repo(s) to channel_configs")
+        except Exception:
+            pass
+
         conn.executescript("""
             CREATE TABLE IF NOT EXISTS repos (
                 project_key  TEXT PRIMARY KEY,
