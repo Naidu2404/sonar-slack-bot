@@ -50,10 +50,12 @@ def build_payload(report: SonarReport, repo: dict) -> list:
              "text": f"❌ *SonarCloud report failed for `{report.project_key}`*\n{report.error}"}},
         ]
 
-    cov_text = (
-        f"{report.coverage_pct:.1f}% ({report.covered_lines}/{report.total_lines} lines)"
-        if report.coverage_pct is not None else "No coverage data"
-    )
+    if report.coverage_pct is not None:
+        cov_text = f"{report.coverage_pct:.1f}% ({report.covered_lines}/{report.total_lines} lines)"
+    elif report.coverage_error:
+        cov_text = "Not configured"
+    else:
+        cov_text = "No data"
 
     b = report.severity_counts
     total = report.total_issues

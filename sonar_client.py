@@ -24,7 +24,8 @@ class SonarReport:
     covered_lines: int = 0
     total_lines: int = 0
     matched_paths: list[str] = field(default_factory=list)
-    error: str | None = None
+    error: str | None = None           # fatal — issues fetch failed
+    coverage_error: str | None = None  # non-fatal — coverage unavailable
 
 
 def _get(endpoint: str, params: dict, token: str) -> dict:
@@ -123,6 +124,6 @@ def fetch_report(
             report.coverage_pct = report.covered_lines / report.total_lines * 100
 
     except Exception as exc:
-        report.error = f"Coverage fetch failed: {exc}"
+        report.coverage_error = str(exc)  # non-fatal: still return issues
 
     return report
