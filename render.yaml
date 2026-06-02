@@ -1,0 +1,17 @@
+services:
+  - type: worker          # background process, no HTTP port needed
+    name: sonar-slack-bot
+    runtime: python
+    buildCommand: pip install -r requirements.txt
+    startCommand: python app.py
+    envVars:
+      - key: SLACK_BOT_TOKEN
+        sync: false       # set manually in Render dashboard
+      - key: SLACK_APP_TOKEN
+        sync: false
+      - key: SONAR_TOKEN
+        sync: false
+    disk:
+      name: bot-data
+      mountPath: /data
+      sizeGB: 1           # persists the SQLite DB across deploys
