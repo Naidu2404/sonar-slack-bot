@@ -5,6 +5,7 @@ Called both by the scheduler (automated reports) and by /sonar report (on-demand
 """
 
 import os
+from collections import defaultdict
 from datetime import datetime
 from slack_sdk import WebClient
 from slack_sdk.errors import SlackApiError
@@ -31,16 +32,68 @@ def _issue_emoji(count):
     return "🔴"
 
 
+SEV_ICON = {"BLOCKER": "🔴", "CRITICAL": "🟠", "MAJOR": "🟡", "MINOR": "⚪", "INFO": "ℹ️"}
+SEV_ORDER = ["BLOCKER", "CRITICAL", "MAJOR", "MINOR", "INFO"]
+MAX_ISSUES_SHOWN = 20   # Slack block limit safety
+
+
 def _schedule_label(schedule: str) -> str:
     return {"weekly": "Weekly", "biweekly": "Bi-weekly", "monthly": "Monthly"}.get(schedule, schedule)
+
+
+def _short_path(path: str) -> str:
+    """Show only last 2 path segments to keep lines short."""
+    parts = path.replace("\\", "/").split("/")
+    return "/".join(parts[-2:]) if len(parts) > 2 else path
+
+
+def _issues_by_file_blocks(issues: list[dict], project_key: str) -> list:
+    """Build blocks listing issues grouped by file, sorted by severity."""
+    if not issues:
+        return []
+
+    # Sort: severity order first, then file
+    sev_rank = {s: i for i, s in enumerate(SEV_ORDER)}
+    sorted_issues = sorted(issues, key=lambda x: (sev_rank.get(x["severity"], 99), x["file"]))
+
+    # Group by file
+    by_file = defaultdict(list)
+    for issue in sorted_issues[:MAX_ISSUES_SHOWN]:
+        by_file[issue["file"]].append(issue)
+
+    blocks = [
+        {"type": "divider"},
+        {"type": "section", "text": {"type": "mrkdwn", "text": "*Issues in filtered files:*"}},
+    ]
+
+    for file_path, file_issues in by_file.items():
+        lines = []
+        for i in issue_list := file_issues:
+            icon = SEV_ICON.get(i["severity"], "⚪")
+            line_ref = f"L{i['line']}" if i["line"] != "?" else ""
+            msg = i["message"][:80] + "…" if len(i["message"]) > 80 else i["message"]
+            lines.append(f"{icon} `{line_ref}` {msg}")
+
+        file_url = (
+            f"https://sonarcloud.io/project/issues"
+            f"?id={project_key}&resolved=false"
+            f"&files={file_path.split('/')[-1]}"
+        )
+        text = f"*<{file_url}|`{_short_path(file_path)}`>*\n" + "\n".join(lines)
+        blocks.append({"type": "section", "text": {"type": "mrkdwn", "text": text}})
+
+    total = len(issues)
+    if total > MAX_ISSUES_SHOWN:
+        blocks.append({"type": "context", "elements": [{"type": "mrkdwn",
+            "text": f"_{total - MAX_ISSUES_SHOWN} more issue(s) not shown — see full report_"}]})
+
+    return blocks
 
 
 # ── Block Kit payload ──────────────────────────────────────────────────────────
 
 def build_payload(report: SonarReport, repo: dict) -> list:
-    project_url = (
-        f"https://sonarcloud.io/project/overview?id={report.project_key}"
-    )
+    issues_url = f"https://sonarcloud.io/project/issues?id={report.project_key}&resolved=false"
     today = datetime.utcnow().strftime("%B %d, %Y")
     schedule = _schedule_label(repo.get("schedule", "weekly"))
 
@@ -70,7 +123,7 @@ def build_payload(report: SonarReport, repo: dict) -> list:
             {"type": "mrkdwn",
              "text": f"*{_cov_emoji(report.coverage_pct)} Coverage*\n{cov_text}"},
             {"type": "mrkdwn",
-             "text": f"*{_issue_emoji(total)} Open Issues*\n{total} total"},
+             "text": f"*{_issue_emoji(total)} Open Issues*\n{total} total in filtered files"},
         ]},
         {"type": "section", "text": {"type": "mrkdwn",
           "text": (
@@ -80,9 +133,6 @@ def build_payload(report: SonarReport, repo: dict) -> list:
               f"🟡 Major: *{b.get('MAJOR',0)}*   "
               f"⚪ Minor: *{b.get('MINOR',0)}*"
           )}},
-        {"type": "divider"},
-        {"type": "section", "text": {"type": "mrkdwn",
-          "text": f"<{project_url}|View full report on SonarCloud →>"}},
     ]
 
     # Urgent banner
@@ -90,6 +140,15 @@ def build_payload(report: SonarReport, repo: dict) -> list:
     if urgent > 0:
         blocks.insert(3, {"type": "section", "text": {"type": "mrkdwn",
           "text": f"⛔ *Action required:* {urgent} blocker/critical issue(s) need attention."}})
+
+    # Per-file issue detail
+    blocks += _issues_by_file_blocks(report.issues_detail, report.project_key)
+
+    blocks += [
+        {"type": "divider"},
+        {"type": "section", "text": {"type": "mrkdwn",
+          "text": f"<{issues_url}|View all issues on SonarCloud →>"}},
+    ]
 
     return blocks
 

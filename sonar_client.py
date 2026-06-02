@@ -24,6 +24,7 @@ class SonarReport:
     covered_lines: int = 0
     total_lines: int = 0
     matched_paths: list[str] = field(default_factory=list)
+    issues_detail: list[dict] = field(default_factory=list)  # full issue objects for matched files
     error: str | None = None           # fatal — issues fetch failed
     coverage_error: str | None = None  # non-fatal — coverage unavailable
 
@@ -81,6 +82,14 @@ def fetch_report(
                 report.total_issues += 1
                 file_part = component.split(":", 1)[-1] if ":" in component else component
                 seen_paths.add(file_part)
+                report.issues_detail.append({
+                    "file":     file_part,
+                    "line":     issue.get("line", "?"),
+                    "severity": sev,
+                    "message":  issue.get("message", ""),
+                    "rule":     issue.get("rule", ""),
+                    "key":      issue.get("key", ""),
+                })
 
             total = data.get("total", 0)
             if page * 500 >= total:
