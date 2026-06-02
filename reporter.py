@@ -35,7 +35,7 @@ def _issue_emoji(count):
 
 
 def _schedule_label(s):
-    return {"weekly": "Weekly", "biweekly": "Bi-weekly", "monthly": "Monthly"}.get(s, s)
+    return {"daily": "Daily", "weekly": "Weekly", "biweekly": "Bi-weekly", "monthly": "Monthly"}.get(s, s)
 
 
 def _short_path(path: str) -> str:

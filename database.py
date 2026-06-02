@@ -47,6 +47,7 @@ def init_db():
                 project_key  TEXT NOT NULL REFERENCES repos(project_key) ON DELETE CASCADE,
                 channel_id   TEXT NOT NULL,
                 schedule     TEXT NOT NULL DEFAULT 'weekly',
+                report_time  TEXT NOT NULL DEFAULT '09:00',  -- HH:MM UTC
                 created_at   TEXT DEFAULT (datetime('now')),
                 UNIQUE(project_key, channel_id)
             );
@@ -150,11 +151,11 @@ def list_all_channel_configs() -> list[dict]:
         return [dict(r) for r in rows]
 
 
-def set_schedule(project_key: str, channel_id: str, schedule: str) -> bool:
+def set_schedule(project_key: str, channel_id: str, schedule: str, report_time: str = "09:00") -> bool:
     with get_conn() as conn:
         return conn.execute(
-            "UPDATE channel_configs SET schedule=? WHERE project_key=? AND channel_id=?",
-            (schedule, project_key, channel_id),
+            "UPDATE channel_configs SET schedule=?, report_time=? WHERE project_key=? AND channel_id=?",
+            (schedule, report_time, project_key, channel_id),
         ).rowcount > 0
 
 

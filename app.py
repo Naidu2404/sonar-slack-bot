@@ -34,13 +34,28 @@ log = logging.getLogger(__name__)
 app       = App(token=os.environ["SLACK_BOT_TOKEN"])
 scheduler = BackgroundScheduler(timezone="UTC")
 
-VALID_SCHEDULES = ("weekly", "biweekly", "monthly")
+VALID_SCHEDULES = ("daily", "weekly", "biweekly", "monthly")
 
-SCHEDULE_CRONS = {
-    "weekly":   dict(day_of_week="mon", hour=9, minute=0),
-    "biweekly": dict(day_of_week="mon", hour=9, minute=0, week="*/2"),
-    "monthly":  dict(day=1, hour=9, minute=0),
-}
+
+def _parse_time(time_str: str) -> tuple[int, int]:
+    """Parse 'HH:MM' → (hour, minute). Raises ValueError on bad input."""
+    parts = time_str.strip().split(":")
+    if len(parts) != 2:
+        raise ValueError
+    h, m = int(parts[0]), int(parts[1])
+    if not (0 <= h <= 23 and 0 <= m <= 59):
+        raise ValueError
+    return h, m
+
+
+def _build_cron(schedule: str, report_time: str) -> dict:
+    h, m = _parse_time(report_time)
+    return {
+        "daily":    dict(hour=h, minute=m),
+        "weekly":   dict(day_of_week="mon", hour=h, minute=m),
+        "biweekly": dict(day_of_week="mon", hour=h, minute=m, week="*/2"),
+        "monthly":  dict(day=1, hour=h, minute=m),
+    }[schedule]
 
 
 # ── Scheduler helpers ──────────────────────────────────────────────────────────
@@ -49,18 +64,18 @@ def _job_id(project_key: str, channel_id: str) -> str:
     return f"report__{project_key}__{channel_id}"
 
 
-def _schedule_pair(project_key: str, channel_id: str, schedule: str):
+def _schedule_pair(project_key: str, channel_id: str, schedule: str, report_time: str = "09:00"):
     job_id = _job_id(project_key, channel_id)
     if scheduler.get_job(job_id):
         scheduler.remove_job(job_id)
     scheduler.add_job(
         post_report,
-        trigger=CronTrigger(**SCHEDULE_CRONS[schedule]),
+        trigger=CronTrigger(**_build_cron(schedule, report_time)),
         id=job_id,
         args=[project_key, channel_id],
         replace_existing=True,
     )
-    log.info(f"Scheduled {project_key} in {channel_id} — {schedule}")
+    log.info(f"Scheduled {project_key} in {channel_id} — {schedule} at {report_time} UTC")
 
 
 def _unschedule_pair(project_key: str, channel_id: str):
@@ -71,7 +86,7 @@ def _unschedule_pair(project_key: str, channel_id: str):
 
 def _load_all_schedules():
     for cfg in db.list_all_channel_configs():
-        _schedule_pair(cfg["project_key"], cfg["channel_id"], cfg["schedule"])
+        _schedule_pair(cfg["project_key"], cfg["channel_id"], cfg["schedule"], cfg.get("report_time", "09:00"))
 
 
 # ── /sonar slash command ───────────────────────────────────────────────────────
@@ -99,7 +114,7 @@ def handle_sonar(ack, respond, command, body):
             "/sonar untrack <key>                       Stop tracking in THIS channel\n"
             "/sonar add-files <key> <path> [path…]     Add file filters for THIS channel\n"
             "/sonar remove-files <key> <path> [path…]  Remove file filters for THIS channel\n"
-            "/sonar schedule <key> weekly|biweekly|monthly\n"
+            "/sonar schedule <key> daily|weekly|biweekly|monthly [HH:MM UTC]\n"
             "/sonar report                              Pick a repo and run its report\n"
             "/sonar list                                List repos tracked here\n"
             "/sonar status <key>                        Show config for this channel\n"
@@ -188,15 +203,29 @@ def handle_sonar(ack, respond, command, body):
     # ── schedule ──────────────────────────────────────────────────────────────
     elif sub == "schedule":
         if len(parts) < 3:
-            return respond("Usage: `/sonar schedule <project-key> weekly|biweekly|monthly`")
-        project_key, sched = parts[1], parts[2].lower()
+            return respond(
+                "Usage: `/sonar schedule <project-key> daily|weekly|biweekly|monthly [HH:MM]`\n"
+                "Time is in 24h UTC format. Defaults to 09:00 if omitted.\n"
+                "Examples:\n"
+                "  `/sonar schedule myrepo daily 08:30`\n"
+                "  `/sonar schedule myrepo weekly 14:00`"
+            )
+        project_key = parts[1]
+        sched       = parts[2].lower()
+        time_str    = parts[3] if len(parts) >= 4 else "09:00"
+
         if sched not in VALID_SCHEDULES:
-            return respond(f"❌ Invalid schedule. Choose: weekly, biweekly, monthly.")
+            return respond(f"❌ Invalid schedule. Choose: daily, weekly, biweekly, monthly.")
+        try:
+            _parse_time(time_str)
+        except ValueError:
+            return respond(f"❌ Invalid time `{time_str}`. Use HH:MM in 24h format, e.g. `09:00` or `14:30`.")
         if not db.get_channel_config(project_key, channel_id):
             return respond(f"❌ `{project_key}` is not tracked here. Run `/sonar track {project_key}` first.")
-        db.set_schedule(project_key, channel_id, sched)
-        _schedule_pair(project_key, channel_id, sched)
-        respond(f"✅ `{project_key}` set to *{sched}* reports in this channel.")
+
+        db.set_schedule(project_key, channel_id, sched, time_str)
+        _schedule_pair(project_key, channel_id, sched, time_str)
+        respond(f"✅ `{project_key}` set to *{sched}* reports at *{time_str} UTC* in this channel.")
 
     # ── report (interactive picker) ───────────────────────────────────────────
     elif sub == "report":
@@ -236,7 +265,7 @@ def handle_sonar(ack, respond, command, body):
         path_str = "\n".join(f"  - `{p}`" for p in paths) if paths else "  _(none — scanning all files)_"
         respond(
             f"*`{project_key}`* in this channel\n"
-            f"Schedule: *{cfg['schedule']}*\n"
+            f"Schedule: *{cfg['schedule']}* at *{cfg.get('report_time', '09:00')} UTC*\n"
             f"File filters:\n{path_str}"
         )
 
