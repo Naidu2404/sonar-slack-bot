@@ -86,7 +86,15 @@ def _unschedule_pair(project_key: str, channel_id: str):
 
 def _load_all_schedules():
     for cfg in db.list_all_channel_configs():
-        _schedule_pair(cfg["project_key"], cfg["channel_id"], cfg["schedule"], cfg.get("report_time", "09:00"))
+        try:
+            schedule    = cfg.get("schedule") or "weekly"
+            report_time = cfg.get("report_time") or "09:00"
+            if schedule not in VALID_SCHEDULES:
+                log.warning(f"Skipping invalid schedule '{schedule}' for {cfg['project_key']}")
+                continue
+            _schedule_pair(cfg["project_key"], cfg["channel_id"], schedule, report_time)
+        except Exception as e:
+            log.warning(f"Could not schedule {cfg['project_key']} in {cfg['channel_id']}: {e}")
 
 
 # ── /sonar slash command ───────────────────────────────────────────────────────
@@ -202,17 +210,19 @@ def handle_sonar(ack, respond, command, body):
     # ── add-files ─────────────────────────────────────────────────────────────
     elif sub == "add-files":
         if len(parts) < 3:
-            return respond("Usage: `/sonar add-files <project-key> <path> [path…]`")
+            return respond(
+                "Usage: `/sonar add-files <project-key> <path> [path…]`\n"
+                "⚠️ Slack has a character limit on slash commands (~3000 chars). "
+                "If you have many paths, add them in a few batches of 5–10 at a time.\n"
+                "Tip: just use a short substring like `contract_staffing` — it matches all subfolders automatically."
+            )
         project_key = parts[1]
         paths = parts[2:]
         if not db.get_channel_config(project_key, channel_id):
             return respond(f"❌ `{project_key}` is not tracked in this channel. Run `/sonar track {project_key}` first.")
         count = db.add_file_paths(project_key, channel_id, paths)
-        all_paths = db.get_file_paths(project_key, channel_id)
-        respond(
-            f"✅ Added {count} path(s) for `{project_key}` in this channel.\n"
-            f"Current filters:\n```\n" + "\n".join(all_paths) + "\n```"
-        )
+        total = len(db.get_file_paths(project_key, channel_id))
+        respond(f"✅ Added {count} path(s) to `{project_key}` in this channel. Total filters: {total}.\nRun `/sonar status {project_key}` to see all.")
 
     # ── remove-files ──────────────────────────────────────────────────────────
     elif sub == "remove-files":
@@ -289,11 +299,17 @@ def handle_sonar(ack, respond, command, body):
         if not cfg:
             return respond(f"❌ `{project_key}` is not tracked in this channel.")
         paths = db.get_file_paths(project_key, channel_id)
-        path_str = "\n".join(f"  - `{p}`" for p in paths) if paths else "  _(none — scanning all files)_"
+        if not paths:
+            path_str = "  _(none — scanning all files)_"
+        elif len(paths) > 20:
+            shown = "\n".join(f"  - `{p}`" for p in paths[:20])
+            path_str = f"{shown}\n  _...and {len(paths) - 20} more_"
+        else:
+            path_str = "\n".join(f"  - `{p}`" for p in paths)
         respond(
             f"*`{project_key}`* in this channel\n"
             f"Schedule: *{cfg['schedule']}* at *{cfg.get('report_time', '09:00')} UTC*\n"
-            f"File filters:\n{path_str}"
+            f"File filters ({len(paths)} total):\n{path_str}"
         )
 
     else:
@@ -320,8 +336,18 @@ def handle_report_select(ack, body, respond):
 # ── Startup ────────────────────────────────────────────────────────────────────
 
 if __name__ == "__main__":
+    log.info("Initialising database…")
     db.init_db()
+
+    log.info("Starting scheduler…")
     scheduler.start()
+
+    log.info("Loading saved schedules…")
     _load_all_schedules()
-    log.info("SonarCloud bot starting…")
-    SocketModeHandler(app, os.environ["SLACK_APP_TOKEN"]).start()
+
+    log.info("Connecting to Slack via Socket Mode…")
+    try:
+        SocketModeHandler(app, os.environ["SLACK_APP_TOKEN"]).start()
+    except Exception as e:
+        log.error(f"Fatal error starting Socket Mode handler: {e}")
+        raise

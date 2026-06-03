@@ -36,31 +36,7 @@ def get_conn():
 
 def init_db():
     with get_conn() as conn:
-        # ── migrations for existing databases ─────────────────────────────────
-        # Add report_time if upgrading from older schema
-        try:
-            conn.execute("ALTER TABLE channel_configs ADD COLUMN report_time TEXT NOT NULL DEFAULT '09:00'")
-            log.info("Migration: added report_time column to channel_configs")
-        except Exception:
-            pass  # column already exists
-
-        # Migrate old schema: if repos had channel_id/schedule, move them to channel_configs
-        try:
-            cols = [r[1] for r in conn.execute("PRAGMA table_info(repos)").fetchall()]
-            if "channel_id" in cols:
-                rows = conn.execute(
-                    "SELECT project_key, channel_id, schedule FROM repos WHERE channel_id IS NOT NULL"
-                ).fetchall()
-                for r in rows:
-                    conn.execute(
-                        "INSERT OR IGNORE INTO channel_configs (project_key, channel_id, schedule) VALUES (?,?,?)",
-                        (r[0], r[1], r[2] or "weekly"),
-                    )
-                if rows:
-                    log.info(f"Migration: moved {len(rows)} repo(s) to channel_configs")
-        except Exception:
-            pass
-
+        # ── Create tables first, then run migrations ───────────────────────────
         conn.executescript("""
             CREATE TABLE IF NOT EXISTS repos (
                 project_key  TEXT PRIMARY KEY,
@@ -87,6 +63,56 @@ def init_db():
                 UNIQUE(config_id, path)
             );
         """)
+
+        # ── Safe migrations (tables exist by now) ──────────────────────────────
+        # Add report_time column if upgrading from older schema
+        try:
+            conn.execute("ALTER TABLE channel_configs ADD COLUMN report_time TEXT NOT NULL DEFAULT '09:00'")
+            log.info("Migration: added report_time column")
+        except Exception:
+            pass  # already exists — fine
+
+        # Migrate old schema where channel_id/schedule lived on repos table
+        try:
+            cols = [r[1] for r in conn.execute("PRAGMA table_info(repos)").fetchall()]
+            if "channel_id" in cols:
+                rows = conn.execute(
+                    "SELECT project_key, channel_id, schedule FROM repos WHERE channel_id IS NOT NULL"
+                ).fetchall()
+                for r in rows:
+                    conn.execute(
+                        "INSERT OR IGNORE INTO channel_configs (project_key, channel_id, schedule) VALUES (?,?,?)",
+                        (r[0], r[1], r[2] or "weekly"),
+                    )
+                if rows:
+                    log.info(f"Migration: moved {len(rows)} repo(s) into channel_configs")
+        except Exception as e:
+            log.warning(f"Migration skipped: {e}")
+
+        # Migrate file_paths: old schema used project_key, new schema uses config_id
+        try:
+            fp_cols = [r[1] for r in conn.execute("PRAGMA table_info(file_paths)").fetchall()]
+            if fp_cols and "config_id" not in fp_cols:
+                log.info("Migration: rebuilding file_paths with config_id…")
+                conn.execute("ALTER TABLE file_paths RENAME TO file_paths_old")
+                conn.execute("""
+                    CREATE TABLE file_paths (
+                        id        INTEGER PRIMARY KEY AUTOINCREMENT,
+                        config_id INTEGER NOT NULL REFERENCES channel_configs(id) ON DELETE CASCADE,
+                        path      TEXT NOT NULL,
+                        UNIQUE(config_id, path)
+                    )
+                """)
+                conn.execute("""
+                    INSERT OR IGNORE INTO file_paths (config_id, path)
+                    SELECT cc.id, fp.path
+                    FROM file_paths_old fp
+                    JOIN channel_configs cc ON cc.project_key = fp.project_key
+                """)
+                conn.execute("DROP TABLE file_paths_old")
+                log.info("Migration: file_paths rebuilt successfully")
+        except Exception as e:
+            log.warning(f"file_paths migration skipped: {e}")
 
 
 # ── Repos ──────────────────────────────────────────────────────────────────────
